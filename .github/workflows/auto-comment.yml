@@ -1,0 +1,11 @@
+name: Auto Comment
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  comment:
+    uses: DataScience4Psych/actions/.github/workflows/auto-comment.yml@main
+    with:
+      lab_number: '09'
+    secrets: inherit
