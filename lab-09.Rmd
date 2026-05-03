@@ -418,3 +418,15 @@ Second, I would try to make the model more transparent so people can understand 
 
 I also think the algorithm should be regularly audited with new data. A model that seems fair at one point in time might become less fair later if policing patterns, sentencing practices, or population characteristics change.
 
+### Exercise 15
+
+One major trade off is between accuracy and fairness. A model might be more accurate overall but still produce unfair error rates for different groups. 
+
+Another trade-off is between false positives and false negatives. Reducing false positives may increase false negatives, and reducing false negatives may increase false positives. 
+
+### Exercise 16
+
+This was a bit of a hard one to think about! Policy changes are needed to make sure risk assessment tools are used fairly. Iam not very sure about how it actually is. But I think courts should not rely only on an algorithmic score when making decisions about a person. The score should be one piece of information, not the final decision-maker. Theree should also be transparency about how the algorithm works, what data it uses, and how accurate it is for different groups. The people involved should also be able to challenge or question the use of these scores.
+
+
+
