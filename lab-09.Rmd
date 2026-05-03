@@ -1,7 +1,6 @@
 ---
 title: "Lab 09: Algorithmic Bias"
-author: "Insert your name here"
-date: "Insert date here"
+author: Tsion
 output: github_document
 ---
 
@@ -12,17 +11,410 @@ First, let's load the necessary packages:
 ```{r load-packages, message = FALSE}
 library(tidyverse)
 library(fairness)
+library(janitor)
 ```
 
 ### The data
 
-For this lab, we'll use the COMPAS dataset compiled by ProPublica. The data has been preprocessed and cleaned for you. You'll have to load it yourself. The dataset is available in the `data` folder, but I've changed the file name from `compas-scores-two-years.csv` to `compas-scores-2-years.csv`. I've done this help you practice debugging code when you encounter an error.
+```{r}
+# Load the COMPAS data
+compas <- read_csv("data/compas-scores-2-years.csv") %>%
+  clean_names() %>%
+  rename(
+    decile_score = decile_score_12,
+    priors_count = priors_count_15
+  )
+
+# Take a look at the data
+glimpse(compas)
+```
+
+# Part 1: Exploring the data
+
+## Exercise 1
+
+```{r Finding compas dimensions}
+nrow(compas)
+ncol(compas)
+```
+
+The COMPAS dataset has `r nrow(compas)` rows and `r ncol(compas)` columns. Each row represents one defendant. The variables include information about the defendant, such as race, sex, age, prior offenses, current charge, COMPAS risk score, and whether the person recidivated within two years.
+
+In my opinion, this dataset is important to examine carefully because each row represents a real person, not just a number. Since the data are connected to criminal justice decisions, mistakes in the algorithm could have serious consequences.
+
+### Exercise 2
+
+```{r unique defendants}
+n_distinct(compas$id)
+nrow(compas)
+```
+
+As we can see, there are `r n_distinct(compas$id)` unique defendants in the dataset, compared to `r nrow(compas)` total number of rows. 
+
+### Exercise 3
+```{r risk score distribution}
+ ggplot(compas, aes(x = decile_score)) +
+  geom_bar() +
+  scale_x_continuous(breaks = 1:10) +
+  labs(
+    title = "Distribution of COMPAS Risk Scores",
+    x = "COMPAS decile score",
+    y = "Number of defendants"
+  ) +
+  theme_minimal()
+```
+
+The distribution of COMPAS decile scores is right-skewed. Most defendants received lower risk scores, especially a score of 1, and the number of defendants generally decreases as the score gets higher. 
+
+In my opinion, this suggests that the dataset has more people classified as lower risk than higher risk, although there are still defendants across the full range from 1 to 10.
+
+### Exercise 4
+
+```{r race distribution}
+ggplot(compas, aes(x = race)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Defendants by Race",
+    x = "Race",
+    y = "Number of defendants"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+```{r sex distribution}
+ggplot(compas, aes(x = sex)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Defendants by Sex",
+    x = "Sex",
+    y = "Number of defendants"
+  ) +
+  theme_minimal()
+```
+
+```{r age distribution}
+ggplot(compas, aes(x = age_cat)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Defendants by Age Category",
+    x = "Age category",
+    y = "Number of defendants"
+  ) +
+  theme_minimal()
+```
+
+### Extra Challenge 
 
 ```{r}
-compas <- read_csv("data/compas-scores-two-years.csv")
+compas_demographics <- compas %>%
+  select(race, sex, age_cat) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "demographic_variable",
+    values_to = "group"
+  )
+ggplot(compas_demographics, aes(x = group, fill = demographic_variable)) +
+  geom_bar() +
+  facet_wrap(~ demographic_variable, scales = "free_x") +
+   scale_fill_manual(
+    values = c(
+      "age_cat" = "steelblue",
+      "race" = "orange",
+      "sex" = "purple"
+    )
+  ) +
+   labs(
+    title = "Distribution of Defendants by Race, Sex, and Age Category",
+    x = "Group",
+    y = "Number of defendants", 
+    fill = "Demographic variable"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    legend.position = "bottom"
+  )
+```
+
+### Part 2: Risk scores and recidivism
+
+### Exercise 5
+
+```{r risk score recidivism}
+# Calculate the recidivism rate for each COMPAS risk score
+score_recid <- compas %>%
+  group_by(decile_score) %>%
+  summarize(
+    n = n(),
+    recid_rate = mean(two_year_recid == 1, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+score_recid
+
+# Visualize the relationship between COMPAS score and actual recidivism
+ggplot(score_recid, aes(x = decile_score, y = recid_rate)) +
+  geom_col() +
+  scale_x_continuous(breaks = 1:10) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Actual Recidivism Rate by COMPAS Risk Score",
+    x = "COMPAS decile score",
+    y = "Percent who recidivated within two years"
+  ) +
+  theme_minimal()
+```
+
+The higher risk scores do seem to correspond to higher rates of recidivism. The graph shows a clear upward pattern: defendants with low COMPAS scores, like 1 or 2, had much lower recidivism rates, while defendants with high scores, like 9 or 10, had much higher recidivism rates.
+
+I think this suggests that the COMPAS score is capturing some real relationship with recidivism risk, although this does not mean the algorithm is perfectly fair or equally accurate for every group.
+
+```{r classify the predictions}
+# Classify defendants as high risk, low risk, or medium
+# Then check whether the prediction was correct
+compas_classified <- compas %>%
+  mutate(
+    risk_group = case_when(
+      decile_score >= 7 ~ "High risk",
+      decile_score <= 4 ~ "Low risk",
+      TRUE ~ "Medium risk"
+    ),
+    prediction_correct = case_when(
+      risk_group == "High risk" & two_year_recid == 1 ~ TRUE,
+      risk_group == "Low risk" & two_year_recid == 0 ~ TRUE,
+      risk_group == "High risk" & two_year_recid == 0 ~ FALSE,
+      risk_group == "Low risk" & two_year_recid == 1 ~ FALSE,
+      TRUE ~ NA
+    )
+  )
+
+# Look at the classifications
+compas_classified %>%
+  count(risk_group, prediction_correct)
+```
+
+We can see here that, for the high-risk group, COMPAS was correct for 1,351 defendants and incorrect for 644 defendants. For the low-risk group, COMPAS was correct for 2,681 defendants and incorrect for 1,216 defendants. The medium-risk group has `NA` for `prediction_correct` because we only defined predictions as clearly high risk or low risk, so the medium-risk scores were not counted as correct or incorrect.
+
+In my opinion, the model is correct more often than it is incorrect for both the high-risk and low-risk groups. However, there are still a lot of incorrect predictions, especially in the low-risk group. This matters because a wrong prediction could affect how a defendant is treated in the criminal justice system.
+
+Here is the classification:
+
+- True positives: 1,351
+
+- False positives: 644 defendants
+
+- True negatives: 2,681 defendants
+
+- False negatives: 1,216 defendants
+
+```{r}
+# We now Calculate the overall accuracy using only high-risk and low-risk classifications
+overall_accuracy <- compas_classified %>%
+  filter(!is.na(prediction_correct)) %>%
+  summarize(
+    accuracy = mean(prediction_correct, na.rm = TRUE)
+  )
+
+overall_accuracy
+```
+
+Oh wait, the overall accuracy is 68%. This is not so great after all. 
+
+### Part 3: Investigating disparities
+
+### Exercise 8
+
+```{r}
+# Let's only keep Black and white defendants for this part of the analysis
+compas_bw <- compas %>%
+  filter(race %in% c("African-American", "Caucasian")) %>%
+  mutate(
+    race_group = case_when(
+      race == "African-American" ~ "Black",
+      race == "Caucasian" ~ "White"
+    )
+  )
+
+# Check the filtered data
+compas_bw %>%
+  count(race_group)
+```
+
+```{r risk score race}
+# Compare COMPAS risk score distributions for Black and white defendants
+ggplot(compas_bw, aes(x = decile_score, fill = race_group)) +
+  geom_bar(position = "dodge") +
+  scale_x_continuous(breaks = 1:10) +
+  labs(
+    title = "COMPAS Risk Scores by Race",
+    x = "COMPAS decile score",
+    y = "Number of defendants",
+    fill = "Race group"
+  ) +
+  theme_minimal()
 ```
 
 
-## Additional Exercises  
+There are more Black defendants than white defendants in the data: 3,696 Black defendants compared with 2,454 white defendants. 
 
-Almost there! Keep building on your work and follow the same structure for any remaining exercises. Each exercise builds on the last, so take your time and make sure your code is working as expected.  
+The bar chart also shows that the white defendants are more concentrated in the lower risk scores, especially score 1. Black defendants appear more evenly spread across the scores and have higher counts in the higher risk categories, especially scores 6 through 10. 
+
+In my opinion, this is important because it suggests that Black defendants were assigned higher COMPAS risk scores more often than white defendants. This does not automatically prove bias by itself, but it does show why we need to look more closely at error rates and fairness across race groups.
+
+
+```{r high risk by race}
+# Calculate the percentage of Black and white defendants classified as high risk
+high_risk_by_race <- compas_bw %>%
+  group_by(race_group) %>%
+  summarize(
+    n = n(),
+    high_risk_n = sum(decile_score >= 7, na.rm = TRUE),
+    high_risk_percent = mean(decile_score >= 7, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+high_risk_by_race
+```
+
+```{r high risk by race plotted}
+# Plot the percentage classified as high risk by race
+ggplot(high_risk_by_race, aes(x = race_group, y = high_risk_percent, fill = race_group)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Percentage Classified as High Risk by Race",
+    x = "Race group",
+    y = "Percent classified as high risk"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+There is certainly a disparity!
+
+### Exercise 10
+```{r error rates}
+# Calculate false positive and false negative rates by race
+error_rates <- compas_bw %>%
+  group_by(race_group) %>%
+  summarize(
+    false_positive_rate = mean(decile_score >= 7 & two_year_recid == 0, na.rm = TRUE) /
+      mean(two_year_recid == 0, na.rm = TRUE),
+    
+    false_negative_rate = mean(decile_score <= 4 & two_year_recid == 1, na.rm = TRUE) /
+      mean(two_year_recid == 1, na.rm = TRUE),
+    
+    .groups = "drop"
+  )
+
+error_rates
+```
+
+The false positive rate is higher for Black defendants than for white defendants. For Black defendants, the false positive rate is about 24.9%, while for white defendants it is about 9.1%. This means Black defendants who did not recidivate were more likely to be classified as high risk.
+
+The false negative rate is higher for white defendants than for Black defendants. For white defendants, the false negative rate is about 47.7%, while for Black defendants it is about 28.0%. This means white defendants who did recidivate were more likely to be classified as low risk.
+
+I think this might be one of the most important findings in the lab (at least for me). The model does not make the same kinds of errors for both race groups. It seems more likely to over-classify Black defendants as high risk and more likely to under-classify white defendants as low risk. Quite interesting? It looks like the errors are not distributed equally across racial groups?
+
+### Exercise 11
+
+```{r error rates long}
+# Change the error-rate table into long format for plotting
+error_rates_long <- error_rates %>%
+  pivot_longer(
+    cols = c(false_positive_rate, false_negative_rate),
+    names_to = "metric",
+    values_to = "rate"
+  ) %>%
+  mutate(
+    metric = case_when(
+      metric == "false_positive_rate" ~ "False positive rate",
+      metric == "false_negative_rate" ~ "False negative rate"
+    )
+  )
+
+error_rates_long
+```
+
+```{r error rates plot}
+# Compare false positive and false negative rates between Black and white defendants
+ggplot(error_rates_long, aes(x = metric, y = rate, fill = race_group)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "False Positive and False Negative Rates by Race",
+    x = "Error type",
+    y = "Rate",
+    fill = "Race group"
+  ) +
+  theme_minimal()
+```
+
+The plot shows a clear disparity in the types of errors made for Black and white defendants. Black defendants have a much higher false positive rate, about 24.9%, compared with about 9.1% for white defendants. This means Black defendants who did not recidivate were more likely to be incorrectly classified as high risk.
+
+White defendants have a higher false negative rate, about 47.7%, compared with about 28.0% for Black defendants. This means white defendants who did recidivate were more likely to be incorrectly classified as low risk.
+
+I chose this style of plot because a bar chart makes it easy to compare the two error rates across the two race groups. In my opinion, putting the false positive rate and false negative rate in the same visualization makes the tradeoff easier to see: the model is not making errors equally across groups, and the direction of the error differs by race. This has been very interesting as it unfolds for sure!
+
+### Part 4: Understanding the sources of bias
+
+### Exercise 12
+```{r}
+# Look at the relationship between prior convictions and COMPAS risk score by race
+compas %>%
+  filter(race %in% c("African-American", "Caucasian")) %>%
+  mutate(
+    race_group = recode(
+      race,
+      "African-American" = "Black",
+      "Caucasian" = "White"
+    )
+  ) %>%
+  ggplot(aes(x = priors_count, y = decile_score, color = race_group)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Prior Convictions and COMPAS Risk Scores by Race",
+    x = "Number of prior convictions",
+    y = "COMPAS decile score",
+    color = "Race group"
+  ) +
+  theme_minimal()
+```
+
+The plot shows that COMPAS risk scores generally increase as the number of prior convictions increases. This makes sense because prior convictions are likely related to the risk score.
+
+However, the trend lines suggest that Black defendants tend to receive higher COMPAS scores than white defendants when the number of prior convictions is low, especially around zero prior convictions. I believe this suggests that prior convictions alone do not fully explain the differences in COMPAS scores by race. The algorithm may be using other variables that contribute to different scores across racial groups.
+
+### Exercise 13
+
+```{r caliberation}
+# Check calibration:
+calibration <- compas_bw %>%
+  group_by(race_group, decile_score) %>%
+  summarize(
+    n = n(),
+    recid_rate = mean(two_year_recid == 1, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+calibration
+```
+
+Based on the calibration table, I do see some evidence supporting Northpointe’s claim that the algorithm is calibrated. For both Black and white defendants, higher COMPAS scores generally correspond to higher actual recidivism rates. For example, people with low scores like 1 or 2 have lower recidivism rates, while people with high scores like 8, 9, or 10 have much higher recidivism rates. The recidivism rates are also fairly similar across race groups for many of the same score levels.
+
+But, I still am not convinced that this means the algorithm is completely fair. We saw earlier that the false positive rate was much higher for Black defendants, while the false negative rate was higher for white defendants. So the algorithm may be calibrated in one sense, but still produce unequal error rates across racial groups?
+
+### Part 5: Designing fairer algorithms
+
+### Exercise 14
+
+If I were creating a fairer risk assessment algorithm, here are some changes I would make.
+
+First, I would test the algorithm separately across racial groups instead of only reporting one overall accuracy number.
+
+Second, I would try to make the model more transparent so people can understand what variables are being used and how they affect the score.
+
+I also think the algorithm should be regularly audited with new data. A model that seems fair at one point in time might become less fair later if policing patterns, sentencing practices, or population characteristics change.
+
